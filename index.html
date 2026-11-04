@@ -10,7 +10,7 @@
 <meta name="theme-color" content="#0d0f13">
 <title>EASUN</title>
 <!--
-  Сторінка віддаленого перегляду монітора EASUN (прошивка v12+).
+  Сторінка віддаленого перегляду монітора EASUN (прошивка v12+; діагностика — v13+).
   Підключається до публічного MQTT-брокера через WebSocket, просить у ESP її головну сторінку
   і показує її, підставляючи дані, що приходять через брокер. Усе зашифровано AES-128-GCM ключем
   з посилання (частина після #) — ця частина адреси не відправляється на сервер.
@@ -30,6 +30,8 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.
 #bar{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);display:none;max-width:calc(100% - 32px);
 background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.25);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #bar.bad{color:var(--bad)}
+#bar small{display:block;color:var(--mut);font-size:11.5px;white-space:normal;margin-top:2px}
+#bar.diag{border-radius:14px;white-space:normal;text-align:center}
 </style>
 </head>
 <body>
@@ -51,7 +53,10 @@ const T = {
   offlineLong: "Монітор не відповідає вже {t}",
   noNet: "Немає з'єднання з хмарою — пробую ще",
   localOnly: "Це доступно лише вдома, у мережі монітора",
-  sec: "с", min: "хв", hr: "год"
+  sec: "с", min: "хв", hr: "год",
+  diag: "Діагностика", dCloud: "хмара", dSelf: "свій запит повернувся", dEsp: "сигнал від плати",
+  dResp: "відповідей", dBad: "нерозшифровано", yes: "✓", no: "✗",
+  dHint: "Плата шле сигнал, коли підключається до хмари. Немає сигналу — перезапусти плату, коли ця сторінка відкрита."
 };
 const DEF_WSS = "wss://broker.hivemq.com:8884/mqtt";
 const STATE_STALE_MS = 15000;   // стан старший за це — монітор «не відповідає»
@@ -62,7 +67,17 @@ function showMsg(t, p, spin) {
   $('msg').querySelector('.spin').style.display = spin ? '' : 'none';
   $('msg').style.display = 'flex';
 }
-function bar(t, bad) { const b = $('bar'); b.textContent = t || ''; b.className = bad ? 'bad' : ''; b.style.display = t ? 'block' : 'none'; }
+function bar(t, bad, sub) {
+  const b = $('bar'); b.textContent = t || ''; b.className = (bad ? 'bad' : '') + (sub ? ' diag' : '');
+  if (sub) { const s = document.createElement('small'); s.textContent = sub; b.appendChild(s); }
+  b.style.display = t ? 'block' : 'none';
+}
+const D = {self: false, esp: false, rx: 0, bad: 0};
+function diagText() {
+  const f = v => v ? T.yes : T.no;
+  return T.diag + ': ' + T.dCloud + ' ' + f(mq && mq.up) + ' · ' + T.dSelf + ' ' + f(D.self) + ' · ' + T.dEsp + ' ' + f(D.esp) +
+    ' · ' + T.dResp + ' ' + D.rx + (D.bad ? ' · ' + T.dBad + ' ' + D.bad : '') + (D.esp ? '' : '. ' + T.dHint);
+}
 let toastT = 0;
 function toast(t) { bar(t); clearTimeout(toastT); toastT = setTimeout(updBar, 3500); }
 
@@ -95,7 +110,7 @@ function packet(h, body) {
   return cat(new Uint8Array([h]), new Uint8Array(len), body);
 }
 class Mqtt {
-  constructor(url, topic, onMsg, onUp) { this.url = url; this.topic = topic; this.onMsg = onMsg; this.onUp = onUp; this.up = false; this.wait = 1000; this.connect(); }
+  constructor(url, topics, onMsg, onUp) { this.url = url; this.topics = topics; this.onMsg = onMsg; this.onUp = onUp; this.up = false; this.wait = 1000; this.connect(); }
   connect() {
     clearTimeout(this.rt);
     let ws;
@@ -122,7 +137,7 @@ class Mqtt {
       if (type === 2) {                           // CONNACK
         if (p[1] !== 0) { this.ws.close(); return; }
         this.wait = 1000;
-        this.ws.send(packet(0x82, cat(new Uint8Array([0, 1]), mstr(this.topic), new Uint8Array([0]))));
+        this.ws.send(packet(0x82, cat(new Uint8Array([0, 1]), ...this.topics.map(t => cat(mstr(t), new Uint8Array([0]))))));
         clearInterval(this.pt); this.pt = setInterval(() => this.ws.readyState === 1 && this.ws.send(new Uint8Array([0xC0, 0])), 30000);
       } else if (type === 9) this.setUp(true);   // SUBACK
       else if (type === 3) {                      // PUBLISH
@@ -151,10 +166,16 @@ async function encReq(c) {
 async function req(c) { if (mq && mq.up) mq.pub('easun/' + P.d + '/q', await encReq(c)); }
 
 async function onMsg(topic, data) {
-  if (data.length < 12 + 3 + 16) return;
+  const isQ = topic.endsWith('/q');
+  if (data.length < 12 + 1 + 16) return;
   let pt;
   try { pt = new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: data.subarray(0, 12)}, key, data.subarray(12))); }
-  catch (e) { return; }
+  catch (e) { if (!isQ) D.bad++; return; }
+  if (isQ) {                                        // тема запитів: наші ж запити і перевірка від плати
+    if (pt[0] === 69) D.esp = true; else D.self = true;   // 'E' — плата щойно підключилася
+    return;
+  }
+  D.rx++; D.esp = true;
   const type = String.fromCharCode(pt[0]), sq = (pt[1] << 8) | pt[2], seq = sq & 0x7FFF, last = !!(sq & 0x8000);
   let r = rx[type];
   if (seq === 0) r = rx[type] = {n: 0, parts: []};
@@ -220,8 +241,8 @@ function ago(ms) { const s = Math.round(ms / 1000); return s < 90 ? s + ' ' + T.
 function updBar() {
   if (!mq) return;
   if (!mq.up) { bar(T.noNet, true); return; }
-  if (state && Date.now() - stateAt > STATE_STALE_MS) { bar(T.offlineLong.replace('{t}', ago(Date.now() - stateAt)), true); return; }
-  if (!state && Date.now() - startAt > 12000) { bar(T.offline, true); return; }
+  if (state && Date.now() - stateAt > STATE_STALE_MS) { bar(T.offlineLong.replace('{t}', ago(Date.now() - stateAt)), true, diagText()); return; }
+  if (!state && Date.now() - startAt > 12000) { bar(T.offline, true, diagText()); return; }
   bar('');
 }
 let startAt = Date.now();
@@ -232,7 +253,7 @@ async function start() {
   try { key = await crypto.subtle.importKey('raw', b64urlDec(P.k), 'AES-GCM', false, ['encrypt', 'decrypt']); }
   catch (e) { showMsg(T.noLink, T.noLinkP); return; }
   showMsg(T.connecting, T.connectingP, true);
-  mq = new Mqtt(P.w, 'easun/' + P.d + '/r', onMsg, up => {
+  mq = new Mqtt(P.w, ['easun/' + P.d + '/r', 'easun/' + P.d + '/q'], onMsg, up => {
     updBar();
     if (up) { startAt = Date.now(); if (curPage) req(curPage); else openPage('P'); }
   });
