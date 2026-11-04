@@ -1,0 +1,6 @@
+{
+  "version": "v20",
+  "notes": "Підтримка PowMr по Modbus, автооновлення прошивки",
+  "esp32": "easun_monitor_v20.esp32.bin",
+  "esp32c3": "easun_monitor_v20.esp32c3.bin"
+}
