@@ -7,17 +7,17 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="EASUN">
-<meta name="theme-color" content="#0d0f13">
+<meta name="theme-color" content="#06090e">
 <title>EASUN</title>
 <!--
-  Сторінка віддаленого перегляду монітора EASUN (прошивка v12+; діагностика — v13+; графік за добу — v18+).
+  Сторінка віддаленого перегляду монітора EASUN (прошивка v12+; діагностика — v13+; графік за добу — v18+; керування за ПІН — v22+).
   Підключається до публічного MQTT-брокера через WebSocket, просить у ESP її головну сторінку
   і показує її, підставляючи дані, що приходять через брокер. Усе зашифровано AES-128-GCM ключем
   з посилання (частина після #) — ця частина адреси не відправляється на сервер.
   Сторінка однакова для всіх: свого в ній нічого немає, тож її можна класти куди завгодно (GitHub Pages тощо).
 -->
 <style>
-:root{--bg:#f3f4f6;--card:#fff;--fg:#111827;--mut:#6b7280;--line:#e5e7eb;--bad:#b91c1c;--acc:#2563eb}
+:root{--bg:#06090e;--card:#0f1724;--fg:#e6f1ff;--mut:#7d8fa6;--line:#24384d;--bad:#ff3b5c;--acc:#22d3ee;color-scheme:dark}
 @media(prefers-color-scheme:dark){:root{--bg:#0d0f13;--card:#161a21;--fg:#e5e7eb;--mut:#9ca3af;--line:#2a313c;--bad:#f87171;--acc:#60a5fa}}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
@@ -32,12 +32,25 @@ background:var(--card);color:var(--fg);border:1px solid var(--line);border-radiu
 #bar.bad{color:var(--bad)}
 #bar small{display:block;color:var(--mut);font-size:11.5px;white-space:normal;margin-top:2px}
 #bar.diag{border-radius:14px;white-space:normal;text-align:center}
+#pin{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.6);z-index:10}
+#pin .box{width:100%;max-width:340px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 18px}
+#pin h1{font-size:17px;margin:0 0 6px}#pin p{margin:0 0 12px;color:var(--mut);font-size:13.5px}
+#pin input[type=password]{width:100%;font-size:24px;letter-spacing:.4em;text-align:center;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+#pin label{display:flex;gap:8px;align-items:center;font-size:13.5px;color:var(--mut);margin:12px 0}
+#pin .bt{display:flex;gap:8px}#pin button{flex:1;padding:11px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit;cursor:pointer}
+#pin button.pri{background:var(--acc);border-color:var(--acc);color:#031015;font-weight:600}#pin .err{color:var(--bad);font-size:13px;min-height:18px;margin-top:8px}
+#lock{position:fixed;right:12px;top:calc(10px + env(safe-area-inset-top));display:none;z-index:6;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 11px;font-size:12.5px;color:var(--fg);cursor:pointer}
 </style>
 </head>
 <body>
 <iframe id="f" title="EASUN"></iframe>
 <div id="msg"><div class="box"><div class="spin"></div><h1 id="mt"></h1><p id="mp"></p></div></div>
 <div id="bar"></div>
+<div id="lock"></div>
+<div id="pin"><div class="box"><h1 id="pt"></h1><p id="pp"></p>
+<input type="password" id="pv" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off">
+<label><input type="checkbox" id="pr"> <span id="prl"></span></label>
+<div class="bt"><button id="pc"></button><button class="pri" id="po"></button></div><div class="err" id="pe"></div></div></div>
 <script>
 // ── Підписи ──
 const T = {
@@ -53,6 +66,12 @@ const T = {
   offlineLong: "Монітор не відповідає вже {t}",
   noNet: "Немає з'єднання з хмарою — пробую ще",
   localOnly: "Це доступно лише вдома, у мережі монітора",
+  pinTitle: "ПІН для керування",
+  pinText: "Введи ПІН, щоб змінювати налаштування монітора віддалено. Задається вдома: Налаштування → Віддалений доступ.",
+  pinRemember: "Запам'ятати на цьому пристрої",
+  pinOk: "Відкрити", pinCancel: "Скасувати", pinWrong: "Неправильний ПІН (або монітор не відповідає)", pinChecking: "Перевіряю…",
+  pinBad: "ПІН — від 4 до 8 цифр", pinNone: "Керування за ПІН не ввімкнено. Вдома: Налаштування → Віддалений доступ → ПІН.",
+  unlocked: "🔓 Керування", lockAsk: "Вийти з керування на цьому пристрої?", needPin: "Щоб змінювати налаштування, відкрий їх (⚙) і введи ПІН",
   sec: "с", min: "хв", hr: "год",
   diag: "Діагностика", dCloud: "хмара", dSelf: "свій запит повернувся", dEsp: "сигнал від плати",
   dResp: "відповідей", dBad: "нерозшифровано", yes: "✓", no: "✗",
@@ -170,7 +189,11 @@ async function onMsg(topic, data) {
   if (data.length < 12 + 1 + 16) return;
   let pt;
   try { pt = new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: data.subarray(0, 12)}, key, data.subarray(12))); }
-  catch (e) { if (!isQ) D.bad++; return; }
+  catch (e) {
+    if (isQ || !ck) { if (!isQ) D.bad++; return; }
+    try { pt = new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: data.subarray(0, 12)}, ck, data.subarray(12))); }   // відповідь керування
+    catch (e2) { D.bad++; return; }
+  }
   if (isQ) {                                        // тема запитів: наші ж запити і перевірка від плати
     if (pt[0] === 69) D.esp = true; else D.self = true;   // 'E' — плата щойно підключилася
     return;
@@ -183,9 +206,15 @@ async function onMsg(topic, data) {
   r.parts.push(pt.slice(3)); r.n++;
   if (!last) return;
   delete rx[type];
-  const text = dec.decode(cat(...r.parts));
+  const all = cat(...r.parts);
+  if (type === 'K') {                               // відповідь керування: [номер 2][статус 1][JSON]
+    const id = all[0] | (all[1] << 8), w = ctlW[id];
+    if (w) { delete ctlW[id]; w({st: all[2], text: dec.decode(all.slice(3))}); }
+    return;
+  }
+  const text = dec.decode(all);
   if (type === 'S') { try { state = JSON.parse(text); stateAt = Date.now(); updBar(); } catch (e) {} }
-  else if (type === 'P' || type === 'T') {
+  else if (type === 'P' || type === 'T' || type === 'W') {
     try { localStorage.setItem('easun_pg_' + type, text); } catch (e) {}
     if (curPage === type && text !== shownHtml) render(type, text);
   }
@@ -199,7 +228,8 @@ function waitFor(type, ms) {
 const SHIM = '<script>(function(){var R=parent.RB;window.fetch=function(u,o){return R.fetch(String(u),o)};' +
   'document.addEventListener("click",function(e){var a=e.target.closest&&e.target.closest("a");if(!a)return;var h=a.getAttribute("href");' +
   'if(!h||h.charAt(0)!="/")return;e.preventDefault();R.nav(h)},true);' +
-  'var s=document.createElement("style");s.textContent="#gear,#bbtn{display:none!important}";document.head.appendChild(s)})()<\/script>';
+  'var s=document.createElement("style");s.textContent=(R.ck?"":"#bbtn{display:none!important}")+' +
+  '"#wscan,#wsave,#wssid,#wpass,#wlist,#bscan,#blist,#bforget,#cnew,#cpin,#cpsave,#cpclr,#clen,#ofile,#obtn{display:none!important}";document.head.appendChild(s)})()<\/script>';
 
 function render(type, html) {
   curPage = type; shownHtml = html;
@@ -215,10 +245,67 @@ async function openPage(type) {
   else showMsg(T.waiting, T.waitingP, true);
   req(type);                                        // свіжа версія (раптом оновилася прошивка)
 }
+// ── Керування за ПІН ──
+let ck = null, ctlId = 1;
+const ctlW = {};
+async function deriveCk(pin) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({name: 'PBKDF2', salt: enc.encode('easun-pin:' + P.d), iterations: 20000, hash: 'SHA-256'}, base, 128);
+  return new Uint8Array(bits);
+}
+async function setCk(raw) { ck = raw ? await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']) : null; RB.ck = !!ck; lockUi(); }
+function ctl(method, path, body) {
+  return new Promise(async (res, rej) => {
+    if (!ck || !mq || !mq.up) { rej(new Error('nock')); return; }
+    const id = ctlId = (ctlId % 65000) + 1, b = enc.encode(path), bd = enc.encode(body || '');
+    const pt = new Uint8Array(12 + b.length + 1 + bd.length);
+    pt[0] = 67;                                                     // 'C'
+    new DataView(pt.buffer).setFloat64(1, Date.now(), true);         // little-endian, як читає ESP
+    pt[9] = id & 255; pt[10] = id >> 8; pt[11] = method === 'P' ? 80 : 71;
+    pt.set(b, 12); pt.set(bd, 13 + b.length);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv}, ck, pt));
+    const t = setTimeout(() => { delete ctlW[id]; rej(new Error('timeout')); }, 10000);
+    ctlW[id] = v => { clearTimeout(t); res(v); };
+    mq.pub('easun/' + P.d + '/q', cat(iv, ct));
+  });
+}
+function lockUi() { const l = $('lock'); l.textContent = T.unlocked; l.style.display = ck ? 'block' : 'none'; }
+$('lock').onclick = () => { if (!confirm(T.lockAsk)) return; try { localStorage.removeItem('easun_ck_' + P.d); } catch (e) {} setCk(null); if (curPage === 'W') openPage('P'); };
+function askPin() {
+  return new Promise(done => {
+    const m = $('pin'), v = $('pv'), e = $('pe');
+    $('pt').textContent = T.pinTitle; $('pp').textContent = T.pinText; $('prl').textContent = T.pinRemember; $('po').textContent = T.pinOk; $('pc').textContent = T.pinCancel;
+    e.textContent = ''; v.value = ''; m.style.display = 'flex'; setTimeout(() => v.focus(), 50);
+    const close = ok => { m.style.display = 'none'; done(ok); };
+    $('pc').onclick = () => close(false);
+    $('po').onclick = async () => {
+      const p = v.value.trim();
+      if (!/^[0-9]{4,8}$/.test(p)) { e.textContent = T.pinBad; return; }
+      e.textContent = T.pinChecking; $('po').disabled = true;
+      const raw = await deriveCk(p);
+      await setCk(raw);
+      try {
+        const r = await ctl('G', '/api/cfg');
+        if (r.st !== 200) throw new Error('st');
+        if ($('pr').checked) try { localStorage.setItem('easun_ck_' + P.d, btoa(String.fromCharCode(...raw))); } catch (x) {}
+        $('po').disabled = false; close(true);
+      } catch (x) { await setCk(null); e.textContent = T.pinWrong; $('po').disabled = false; }
+    };
+    v.onkeydown = ev => { if (ev.key === 'Enter') $('po').click(); };
+  });
+}
 const json = (o, st) => new Response(typeof o === 'string' ? o : JSON.stringify(o), {status: st || 200, headers: {'Content-Type': 'application/json'}});
 RB.fetch = async (u, o) => {
   const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
-  if (o && o.method && o.method.toUpperCase() !== 'GET') { toast(T.localOnly); return json({ok: false}, 403); }
+  const post = o && o.method && o.method.toUpperCase() !== 'GET';
+  if (ck && (path === '/api/cfg' || (post && ['/api/sched', '/api/reboot', '/bms/pause', '/bms/resume'].includes(path)))) {
+    const body = o && o.body != null ? String(o.body) : '';
+    const r = await ctl(post ? 'P' : 'G', path, body);
+    if (r.st !== 200) { toast(T.localOnly); return json({ok: false}, 403); }
+    return new Response(r.text, {status: 200, headers: {'Content-Type': 'application/json'}});
+  }
+  if (post) { toast(ck ? T.localOnly : T.needPin); return json({ok: false}, 403); }
   if (path === '/api') {
     if (!state || Date.now() - stateAt > STATE_STALE_MS) {
       req('H');
@@ -235,6 +322,11 @@ RB.nav = h => {
   const path = h.split(/[?#]/)[0];
   if (path === '/') openPage('P');
   else if (path === '/stats') openPage('T');
+  else if (path === '/settings') {
+    if (state && !state.pin) { toast(T.pinNone); return; }
+    if (ck) { openPage('W'); return; }
+    askPin().then(ok => { if (ok) openPage('W'); });
+  }
   else toast(T.localOnly);
 };
 
@@ -253,6 +345,7 @@ async function start() {
   if (!window.crypto || !crypto.subtle) { showMsg(T.noCrypto, T.noCryptoP); return; }
   try { key = await crypto.subtle.importKey('raw', b64urlDec(P.k), 'AES-GCM', false, ['encrypt', 'decrypt']); }
   catch (e) { showMsg(T.noLink, T.noLinkP); return; }
+  try { const sv = localStorage.getItem('easun_ck_' + P.d); if (sv) await setCk(Uint8Array.from(atob(sv), c => c.charCodeAt(0))); } catch (e) {}
   showMsg(T.connecting, T.connectingP, true);
   mq = new Mqtt(P.w, ['easun/' + P.d + '/r', 'easun/' + P.d + '/q'], onMsg, up => {
     updBar();
