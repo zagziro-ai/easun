@@ -10,7 +10,7 @@
 <meta name="theme-color" content="#0d0f13">
 <title>EASUN</title>
 <!--
-  Сторінка віддаленого перегляду монітора EASUN (прошивка v12+; діагностика — v13+).
+  Сторінка віддаленого перегляду монітора EASUN (прошивка v12+; діагностика — v13+; графік за добу — v18+).
   Підключається до публічного MQTT-брокера через WebSocket, просить у ESP її головну сторінку
   і показує її, підставляючи дані, що приходять через брокер. Усе зашифровано AES-128-GCM ключем
   з посилання (частина після #) — ця частина адреси не відправляється на сервер.
@@ -228,6 +228,7 @@ RB.fetch = async (u, o) => {
     return json(state);
   }
   if (path === '/api/stats') { const p = waitFor('A', 15000); req('A'); return json(await p); }
+  if (path === '/api/hist') { const p = waitFor('G', 15000); req('G'); return json(await p); }
   throw new Error('not available');
 };
 RB.nav = h => {
