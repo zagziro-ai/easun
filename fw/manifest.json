@@ -1,1 +1,1 @@
-{"version":"v54","notes":"Telegram для кількох людей: «Додати людину» / /invite, /who","esp32":"easun_monitor_v54.esp32.bin"}
+{"version":"v55","notes":"Telegram: місце під з'єднання бронюється при запуску (не вистачало пам'яті); кілька отримувачів","esp32":"easun_monitor_v55.esp32.bin"}
